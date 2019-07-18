@@ -17,6 +17,7 @@ limitations under the License.
 package digitalocean
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -39,50 +40,102 @@ const (
 )
 
 // digitaloceanCloudProvider implements CloudProvider interface.
-type digitaloceanCloudProvider struct{}
+type digitaloceanCloudProvider struct {
+	manager *DigitalOceanManager
 
+	// nodeGroups contains the current set of node groups
+	nodeGroups map[string]*NodeGroup
+
+	// droplets contains a mapping of a node to a node groupd ID. Use the
+	// nodeGroups map to obtain the actual node group
+	droplets map[string]string
+}
+
+// Name returns name of the cloud provider.
 func (d *digitaloceanCloudProvider) Name() string {
-	panic("not implemented")
+	return "digitalocean"
 }
 
+// NodeGroups returns all node groups configured for this cloud provider.
 func (d *digitaloceanCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
-	panic("not implemented")
+	nodeGroups := make([]cloudprovider.NodeGroup, 0, len(d.nodeGroups))
+	for _, ng := range d.nodeGroups {
+		nodeGroups = append(nodeGroups, ng)
+	}
+	return nodeGroups
 }
 
-func (d *digitaloceanCloudProvider) NodeGroupForNode(*apiv1.Node) (cloudprovider.NodeGroup, error) {
-	panic("not implemented")
+// NodeGroupForNode returns the node group for the given node, nil if the node
+// should not be processed by cluster autoscaler, or non-nil error if such
+// occurred. Must be implemented.
+func (d *digitaloceanCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
+	nodeGroupID, ok := d.droplets[node.Spec.ProviderID]
+	if !ok {
+		return nil, fmt.Errorf("node with id %q does not exist", node.Spec.ProviderID)
+	}
+
+	nodeGroup, ok := d.nodeGroups[nodeGroupID]
+	if !ok {
+		return nil, fmt.Errorf("node group with id %q does not exist", nodeGroupID)
+	}
+
+	return nodeGroup, nil
 }
 
+// Pricing returns pricing model for this cloud provider or error if not
+// available. Implementation optional.
 func (d *digitaloceanCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
-	panic("not implemented")
+	return nil, cloudprovider.ErrNotImplemented
 }
 
+// GetAvailableMachineTypes get all machine types that can be requested from
+// the cloud provider. Implementation optional.
 func (d *digitaloceanCloudProvider) GetAvailableMachineTypes() ([]string, error) {
-	panic("not implemented")
+	return nil, cloudprovider.ErrNotImplemented
 }
 
-func (d *digitaloceanCloudProvider) NewNodeGroup(machineType string, labels map[string]string, systemLabels map[string]string, taints []apiv1.Taint, extraResources map[string]resource.Quantity) (cloudprovider.NodeGroup, error) {
-	panic("not implemented")
+// NewNodeGroup builds a theoretical node group based on the node definition
+// provided. The node group is not automatically created on the cloud provider
+// side. The node group is not returned by NodeGroups() until it is created.
+// Implementation optional.
+func (d *digitaloceanCloudProvider) NewNodeGroup(
+	machineType string,
+	labels map[string]string,
+	systemLabels map[string]string,
+	taints []apiv1.Taint,
+	extraResources map[string]resource.Quantity,
+) (cloudprovider.NodeGroup, error) {
+	return nil, cloudprovider.ErrNotImplemented
 }
 
+// GetResourceLimiter returns struct containing limits (max, min) for
+// resources (cores, memory etc.).
 func (d *digitaloceanCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimiter, error) {
-	panic("not implemented")
+	return nil, cloudprovider.ErrNotImplemented
 }
 
+// GPULabel returns the label added to nodes with GPU resource.
 func (d *digitaloceanCloudProvider) GPULabel() string {
-	panic("not implemented")
+	return GPULabel
 }
 
+// GetAvailableGPUTypes return all available GPU types cloud provider supports.
 func (d *digitaloceanCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
-	panic("not implemented")
+	return nil
 }
 
+// Cleanup cleans up open resources before the cloud provider is destroyed,
+// i.e. go routines etc.
 func (d *digitaloceanCloudProvider) Cleanup() error {
-	panic("not implemented")
+	return cloudprovider.ErrNotImplemented
 }
 
+// Refresh is called before every main loop and can be used to dynamically
+// update cloud provider state. In particular the list of node groups
+// returned by NodeGroups() can change as a result of
+// CloudProvider.Refresh().
 func (d *digitaloceanCloudProvider) Refresh() error {
-	panic("not implemented")
+	return cloudprovider.ErrNotImplemented
 }
 
 // BuildDigitalOcean builds DigitalOcean cloud provider, manager etc.
@@ -97,6 +150,21 @@ func BuildDigitalOcean(opts config.AutoscalingOptions, do cloudprovider.NodeGrou
 		defer config.Close()
 	}
 
-	// TODO(arslan): fill it
-	return &digitaloceanCloudProvider{}
+	manager, err := NewDigitalOceanManager(config)
+	if err != nil {
+		klog.Fatalf("Failed to create DigitalOcean manager: %v", err)
+	}
+
+	provider, err := NewDigitalOceanCloudProvider(manager)
+	if err != nil {
+		klog.Fatalf("Failed to create DigitalOcean cloud provider: %v", err)
+	}
+
+	return provider
+}
+
+func NewDigitalOceanCloudProvider(manager *DigitalOceanManager) (*digitaloceanCloudProvider, error) {
+	return &digitaloceanCloudProvider{
+		manager: manager,
+	}, nil
 }
