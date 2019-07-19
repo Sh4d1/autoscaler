@@ -16,12 +16,120 @@ limitations under the License.
 
 package digitalocean
 
-import "io"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
 
-// DigitalOceanManager handles DigitalOcean communication and data caching.
+	"golang.org/x/oauth2"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/digitalocean/godo"
+)
+
+// DigitalOceanManager handles DigitalOcean communication and data caching of
+// node groups (node pools in DOKS)
 type DigitalOceanManager struct {
+	client *godo.Client
+
+	clusterID string
+
+	// nodeGroups contains the current set of node groups
+	nodeGroups map[string]*NodeGroup
+
+	// droplets contains a mapping of a node to a node group ID. Use the
+	// nodeGroups map to obtain the actual node group
+	droplets map[string]string
+}
+
+// Config is the configuration of the DigitalOcean cloud provider
+type Config struct {
+	// clusterID is the id associated with the cluster where DigitalOcean
+	// Cluster Autoscaler is running.
+	clusterID string
+
+	// token is the User's Access Token associated with the cluster where
+	// DigitalOcean Cluster Autoscaler is running.
+	token string
+
+	// url points to DigitalOcean API. If empty, defaults to
+	// https://api.digitalocean.com/
+	url string
+
+	// version defines the version of the DigitalOcean cluster autoscaler
+	version string
 }
 
 func NewDigitalOceanManager(configReader io.Reader) (*DigitalOceanManager, error) {
-	return &DigitalOceanManager{}, nil
+	cfg := &Config{}
+	if configReader != nil {
+		body, err := ioutil.ReadAll(configReader)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(body, cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if cfg.token == "" {
+		return nil, errors.New("access token  is not provided")
+	}
+	if cfg.clusterID == "" {
+		return nil, errors.New("cluster ID is not provided")
+	}
+
+	tokenSource := oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: cfg.token,
+	})
+	oauthClient := oauth2.NewClient(context.Background(), tokenSource)
+
+	opts := []godo.ClientOpt{}
+	if cfg.url != "" {
+		opts = append(opts, godo.SetBaseURL(cfg.url))
+	}
+
+	version := "dev"
+	if cfg.version != "" {
+		version = cfg.version
+	}
+	opts = append(opts, godo.SetUserAgent("cluster-autoscaler-digitalocean/"+version))
+
+	doClient, err := godo.New(oauthClient, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't initialize DigitalOcean client: %s", err)
+	}
+
+	d := &DigitalOceanManager{
+		client:     doClient,
+		clusterID:  cfg.clusterID,
+		nodeGroups: make(map[string]*NodeGroup, 0),
+		droplets:   make(map[string]string, 0),
+	}
+
+	// initialize the node groups
+	if err := d.Refresh(); err != nil {
+		return nil, err
+	}
+
+	return d, nil
+}
+
+// Refresh refreshes the cache holding the nodegroups
+func (d *DigitalOceanManager) Refresh() error {
+	ctx := context.Background()
+	nodePools, _, err := d.client.Kubernetes.ListNodePools(ctx, d.clusterID, nil)
+	if err != nil {
+		return err
+	}
+
+	for _, np := range nodePools {
+		d.nodeGroups[np.ID] = &NodeGroup{
+			id: np.ID,
+		}
+	}
+
+	return nil
 }

@@ -42,13 +42,12 @@ const (
 // digitaloceanCloudProvider implements CloudProvider interface.
 type digitaloceanCloudProvider struct {
 	manager *DigitalOceanManager
+}
 
-	// nodeGroups contains the current set of node groups
-	nodeGroups map[string]*NodeGroup
-
-	// droplets contains a mapping of a node to a node groupd ID. Use the
-	// nodeGroups map to obtain the actual node group
-	droplets map[string]string
+func NewDigitalOceanCloudProvider(manager *DigitalOceanManager) (*digitaloceanCloudProvider, error) {
+	return &digitaloceanCloudProvider{
+		manager: manager,
+	}, nil
 }
 
 // Name returns name of the cloud provider.
@@ -58,8 +57,8 @@ func (d *digitaloceanCloudProvider) Name() string {
 
 // NodeGroups returns all node groups configured for this cloud provider.
 func (d *digitaloceanCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
-	nodeGroups := make([]cloudprovider.NodeGroup, 0, len(d.nodeGroups))
-	for _, ng := range d.nodeGroups {
+	nodeGroups := make([]cloudprovider.NodeGroup, 0, len(d.manager.nodeGroups))
+	for _, ng := range d.manager.nodeGroups {
 		nodeGroups = append(nodeGroups, ng)
 	}
 	return nodeGroups
@@ -69,12 +68,12 @@ func (d *digitaloceanCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 // should not be processed by cluster autoscaler, or non-nil error if such
 // occurred. Must be implemented.
 func (d *digitaloceanCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
-	nodeGroupID, ok := d.droplets[node.Spec.ProviderID]
+	nodeGroupID, ok := d.manager.droplets[node.Spec.ProviderID]
 	if !ok {
 		return nil, fmt.Errorf("node with id %q does not exist", node.Spec.ProviderID)
 	}
 
-	nodeGroup, ok := d.nodeGroups[nodeGroupID]
+	nodeGroup, ok := d.manager.nodeGroups[nodeGroupID]
 	if !ok {
 		return nil, fmt.Errorf("node group with id %q does not exist", nodeGroupID)
 	}
@@ -140,17 +139,17 @@ func (d *digitaloceanCloudProvider) Refresh() error {
 
 // BuildDigitalOcean builds DigitalOcean cloud provider, manager etc.
 func BuildDigitalOcean(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
-	var config io.ReadCloser
+	var configFile io.ReadCloser
 	if opts.CloudConfig != "" {
 		var err error
-		config, err = os.Open(opts.CloudConfig)
+		configFile, err = os.Open(opts.CloudConfig)
 		if err != nil {
 			klog.Fatalf("Couldn't open cloud provider configuration %s: %#v", opts.CloudConfig, err)
 		}
-		defer config.Close()
+		defer configFile.Close()
 	}
 
-	manager, err := NewDigitalOceanManager(config)
+	manager, err := NewDigitalOceanManager(configFile)
 	if err != nil {
 		klog.Fatalf("Failed to create DigitalOcean manager: %v", err)
 	}
@@ -161,10 +160,4 @@ func BuildDigitalOcean(opts config.AutoscalingOptions, do cloudprovider.NodeGrou
 	}
 
 	return provider
-}
-
-func NewDigitalOceanCloudProvider(manager *DigitalOceanManager) (*digitaloceanCloudProvider, error) {
-	return &digitaloceanCloudProvider{
-		manager: manager,
-	}, nil
 }
