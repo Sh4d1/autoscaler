@@ -28,10 +28,15 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/digitalocean/godo"
 )
 
+type nodeGroupClient interface {
+	GetNodePool(ctx context.Context, clusterID, poolID string) (*godo.KubernetesNodePool, *godo.Response, error)
+	ListNodePools(ctx context.Context, clusterID string, opts *godo.ListOptions) ([]*godo.KubernetesNodePool, *godo.Response, error)
+}
+
 // DigitalOceanManager handles DigitalOcean communication and data caching of
 // node groups (node pools in DOKS)
 type DigitalOceanManager struct {
-	client *godo.Client
+	client nodeGroupClient
 
 	clusterID string
 
@@ -103,7 +108,7 @@ func NewDigitalOceanManager(configReader io.Reader) (*DigitalOceanManager, error
 	}
 
 	d := &DigitalOceanManager{
-		client:     doClient,
+		client:     doClient.Kubernetes,
 		clusterID:  cfg.clusterID,
 		nodeGroups: make(map[string]*NodeGroup, 0),
 		droplets:   make(map[string]string, 0),
@@ -120,14 +125,19 @@ func NewDigitalOceanManager(configReader io.Reader) (*DigitalOceanManager, error
 // Refresh refreshes the cache holding the nodegroups
 func (d *DigitalOceanManager) Refresh() error {
 	ctx := context.Background()
-	nodePools, _, err := d.client.Kubernetes.ListNodePools(ctx, d.clusterID, nil)
+	nodePools, _, err := d.client.ListNodePools(ctx, d.clusterID, nil)
 	if err != nil {
 		return err
 	}
 
 	for _, np := range nodePools {
+		// NOTE(arslan): do not include the size or nodes in this struct as
+		// those are dynamic and can change. Those will be handled
+		// dynamically within the NodeGroup type
 		d.nodeGroups[np.ID] = &NodeGroup{
-			id: np.ID,
+			id:        np.ID,
+			clusterID: d.clusterID,
+			client:    d.client,
 		}
 	}
 
